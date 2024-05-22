@@ -1,6 +1,8 @@
 import telegram
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 import subprocess
+from cryptography.fernet import Fernet
+import base64
 import os
 import logging
 import random
@@ -31,6 +33,8 @@ COMMANDS = {
     "/examples": "Get example shell scripts",
     "/resources": "Get helpful resources for shell scripting",
     "/status": "Get system status (ping, uptime, etc.)",
+    "/encrypt_shell": "Encrypt a shell script",
+    "/decrypt_shell": "Decrypt a shell script",
     "/menu_lainnya": "Access additional features"
 }
 
@@ -70,6 +74,91 @@ def start(update, context):
 def help(update, context):
     help_text = "\n".join([f"{command} - {description}" for command, description in COMMANDS.items()])
     update.message.reply_text(f"Here are the available commands:\n\n{help_text}")
+
+def generate_key():
+    return Fernet.generate_key()
+
+def encrypt_shell(update, context):
+    if update.message.chat.type != "private":
+        update.message.reply_text("⚠️ Mohon kirimkan skrip shell Anda secara pribadi ke bot ini.")
+        return
+
+    if not update.message.document.file_name.endswith('.sh'):
+        update.message.reply_text("❌ Bot hanya bisa mengenkrip file yang berakhiran .sh")
+        return
+
+    user_id = update.message.from_user.id
+    file_id = update.message.document.file_id
+    file_name = f"{user_id}_{update.message.document.file_name}"
+
+    try:
+        file = context.bot.getFile(file_id)
+        file.download(file_name)
+
+        key = generate_key()
+        f = Fernet(key)
+        with open(file_name, "rb") as file:
+            original = file.read()
+        encrypted = f.encrypt(original)
+
+        with open(f"encrypted_{file_name}", "wb") as file:
+            file.write(encrypted)
+
+        with open(f"encrypted_{file_name}", "rb") as file:
+            context.bot.send_document(chat_id=update.message.chat_id, document=file, filename=f"encrypted_{file_name}")
+
+        key_str = base64.urlsafe_b64encode(key).decode()
+        update.message.reply_text(f"✅ Skrip berhasil dienkripsi!\n\nSimpan kunci ini dengan aman:\n\n`{key_str}`", parse_mode=telegram.ParseMode.MARKDOWN)
+    except Exception as e:
+        update.message.reply_text(f"❌ Terjadi kesalahan saat mengenkripsi: {e}")
+    finally:
+        os.remove(file_name)
+        os.remove(f"encrypted_{file_name}")
+
+def decrypt_shell(update, context):
+    if update.message.chat.type != "private":
+        update.message.reply_text("⚠️ Mohon kirimkan skrip shell yang dienkripsi secara pribadi ke bot ini.")
+        return
+
+    if not update.message.document.file_name.startswith('encrypted_') or not update.message.document.file_name.endswith('.sh'):
+        update.message.reply_text("❌ Bot hanya bisa mendekrip file yang berakhiran .sh dan diawali dengan 'encrypted_'")
+        return
+    
+    user_id = update.message.from_user.id
+    file_id = update.message.document.file_id
+    file_name = f"{user_id}_{update.message.document.file_name}"
+    
+    # Ask for encryption key
+    context.bot.send_message(chat_id=update.message.chat_id, text="🔑 Masukkan kunci enkripsi:")
+    
+    def process_key(update, context):
+        try:
+            key_str = update.message.text
+            key = base64.urlsafe_b64decode(key_str)
+            f = Fernet(key)
+
+            try:
+                file = context.bot.getFile(file_id)
+                file.download(file_name)
+                with open(file_name, "rb") as file:
+                    encrypted = file.read()
+                decrypted = f.decrypt(encrypted)
+
+                with open(f"decrypted_{file_name[9:]}", "wb") as file: #remove prefix 'encrypted_'
+                    file.write(decrypted)
+                
+                with open(f"decrypted_{file_name[9:]}", "rb") as file:
+                    context.bot.send_document(chat_id=update.message.chat_id, document=file, filename=f"decrypted_{file_name[9:]}")
+
+                update.message.reply_text("✅ Skrip berhasil didekripsi!")
+            except Exception as e:
+                update.message.reply_text(f"❌ Terjadi kesalahan saat mendekripsi: {e}")
+            finally:
+                os.remove(file_name)
+                os.remove(f"decrypted_{file_name[9:]}")
+
+        except Exception as e:
+            update.message.reply_text(f"❌ Kunci enkripsi tidak valid: {e}")
 
 def setup(update, context):
     user = update.message.from_user
@@ -181,15 +270,35 @@ def handle_menu_lainnya(update, context):
 def handle_fitur1(update, context):
     run_other_script(update, context, "quote.py")
 
+# --- Dispatcher Setup ---
 updater = Updater(TOKEN, use_context=True)
 dp = updater.dispatcher
 
 # Add command handlers (start, help, check, setup, examples, resources)
-# Add message handler for document files (shell scripts)
+dp.add_handler(CommandHandler("start", start))
+dp.add_handler(CommandHandler("help", help))
+dp.add_handler(CommandHandler("setup", setup))
+# Add the document handler for handling shell script uploads
+dp.add_handler(MessageHandler(Filters.document.mime_type("text/plain"), handle_shell_script))
+# Add handler for encryption and decryption commands
+dp.add_handler(CommandHandler("encrypt_shell", encrypt_shell))
+dp.add_handler(CommandHandler("decrypt_shell", decrypt_shell))
 
-dp.add_handler(CommandHandler("examples", examples))
-dp.add_handler(CommandHandler("resources", resources))
+# Add handler for menu lainnya and its sub-features
+dp.add_handler(CommandHandler("menu_lainnya", handle_menu_lainnya))
+dp.add_handler(CommandHandler("fitur1", handle_fitur1))
+# ... add handlers for other features (fitur2, fitur3, etc.) if needed
+
+
+# Add message handlers (handle_calculation, unknown)
+dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_calculation)) # Handle calculation input for calculator
 dp.add_handler(MessageHandler(Filters.command, unknown))  # Handle unknown commands
 
+
+# Add show_handlers command (for debugging)
+dp.add_handler(CommandHandler("show_handlers", show_handlers))
+
+
+# Start the bot
 updater.start_polling()
 updater.idle()
