@@ -3,6 +3,7 @@ from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 import subprocess
 from cryptography.fernet import Fernet
 import base64
+import openai
 import os
 import logging
 import random
@@ -35,6 +36,7 @@ COMMANDS = {
     "/status": "Get system status (ping, uptime, etc.)",
     "/encrypt_shell": "Encrypt a shell script",
     "/decrypt_shell": "Decrypt a shell script",
+    "/ai": "Chat with the AI",
     "/menu_lainnya": "Access additional features"
 }
 
@@ -74,6 +76,19 @@ def start(update, context):
 def help(update, context):
     help_text = "\n".join([f"{command} - {description}" for command, description in COMMANDS.items()])
     update.message.reply_text(f"Here are the available commands:\n\n{help_text}")
+
+def handle_ai(update, context):
+    context.user_data['chat_history'] = []  # Initialize chat history
+    update.message.reply_text("Silakan ajukan pertanyaan Anda:")
+
+def handle_ai_response(update, context):
+    user_message = update.message.text
+    chat_history = context.user_data.get('chat_history', [])
+    response = get_ai_response(user_message, chat_history)
+    chat_history.append({"role": "user", "content": user_message})
+    chat_history.append({"role": "assistant", "content": response})
+    context.user_data['chat_history'] = chat_history  # Update chat history
+    update.message.reply_text(response)
 
 def generate_key():
     return Fernet.generate_key()
@@ -293,7 +308,8 @@ dp.add_handler(CommandHandler("fitur1", handle_fitur1))
 # Add message handlers (handle_calculation, unknown)
 dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_calculation)) # Handle calculation input for calculator
 dp.add_handler(MessageHandler(Filters.command, unknown))  # Handle unknown commands
-
+dp.add_handler(CommandHandler("ai", handle_ai))
+dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_ai_response))
 
 # Add show_handlers command (for debugging)
 dp.add_handler(CommandHandler("show_handlers", show_handlers))
