@@ -1,0 +1,55 @@
+name: Lint and Fix Shell Scripts
+
+on:
+  push:
+    branches:
+      - main 
+
+jobs:
+  lint-and-fix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Set up ShellCheck
+        uses: reviewdog/action-shellcheck@v1
+
+      - name: Find Shell Scripts
+        id: find-scripts
+        run: echo "::set-output name=scripts::$(find . -type f -name "*.sh")"
+
+      - name: Lint and Fix Each Script
+        run: |
+          for script in ${{ steps.find-scripts.outputs.scripts }}; do
+            echo "Checking $script"
+            shellcheck "$script"
+            if [ -n "$(shellcheck -f diff "$script" | grep '^-' | sed 's/-//')" ]; then
+              shellcheck -f diff "$script" | sed 's/-//' | patch "$script"
+              git add "$script"
+            fi
+          done
+
+      - name: Commit Changes (If Any)
+        run: |
+          if git diff --exit-code; then
+            git config --global user.name "elynord"
+            git config --global user.email "meuthiaelyani@proton.me"
+            git commit -am "Auto-fix shell script issues"
+          fi
+
+      - name: Push Changes (If Any)
+        if: github.event_name == 'push'
+        run: git push
+
+      - name: Create Pull Request (If Changes Pushed)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: peter-evans/create-pull-request@v4
+        with:
+          title: "Auto-fix shell script issues"
+          body: "This PR contains automatic fixes for shell script issues."
+          branch: auto-fix-shell-script
+          base: main
