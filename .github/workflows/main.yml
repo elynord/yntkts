@@ -1,55 +1,110 @@
-name: Lint and Fix Shell Scripts
+name: Lint and Fix Shell and Python Scripts
 
 on:
   push:
     branches:
-      - main 
+      - main
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
 
 jobs:
   lint-and-fix:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
 
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'  # Sesuaikan dengan versi Python Anda
+
+      - name: Install Python dependencies
+        run: pip install pylint autopep8
+
       - name: Set up ShellCheck
         uses: reviewdog/action-shellcheck@v1
 
       - name: Find Shell Scripts
-        id: find-scripts
+        id: find-shell-scripts
         run: echo "::set-output name=scripts::$(find . -type f -name "*.sh")"
 
-      - name: Lint and Fix Each Script
+      - name: Find Python Scripts
+        id: find-python-scripts
+        run: echo "::set-output name=scripts::$(find . -type f -name "*.py")"
+
+      - name: Lint Shell Scripts and Collect Errors
+        id: lint-shell-scripts
+        continue-on-error: true
         run: |
-          for script in ${{ steps.find-scripts.outputs.scripts }}; do
+          errors=""
+          for script in ${{ steps.find-shell-scripts.outputs.scripts }}; do
             echo "Checking $script"
-            shellcheck "$script"
+            if ! shellcheck "$script"; then
+              errors="$errors\n$script"
+            fi
+          done
+          echo "::set-output name=errors::$errors"
+
+      - name: Lint Python Scripts and Collect Errors
+        id: lint-python-scripts
+        continue-on-error: true
+        run: |
+          errors=""
+          for script in ${{ steps.find-python-scripts.outputs.scripts }}; do
+            echo "Checking $script"
+            if ! pylint --exit-zero "$script"; then
+              errors="$errors\n$script"
+            fi
+          done
+          echo "::set-output name=errors::$errors"
+
+      - name: Create Pull Request or Auto-Fix
+        if: steps.lint-shell-scripts.outputs.errors != '' || steps.lint-python-scripts.outputs.errors != '' || github.event_name == 'schedule'
+        uses: peter-evans/create-pull-request@v4
+        with:
+          title: "Script linting errors"
+          body: |
+            The following scripts have linting errors:
+
+            ${{ steps.lint-shell-scripts.outputs.errors }}
+            ${{ steps.lint-python-scripts.outputs.errors }}
+
+            Please review and fix these errors.
+          branch: auto-fix-scripts
+          base: main
+          delete-branch: true
+
+      - name: Auto-Fix Shell Scripts (If No Errors and Manual Trigger)
+        if: steps.lint-shell-scripts.outputs.errors == '' && github.event_name == 'workflow_dispatch'
+        run: |
+          for script in ${{ steps.find-shell-scripts.outputs.scripts }}; do
             if [ -n "$(shellcheck -f diff "$script" | grep '^-' | sed 's/-//')" ]; then
               shellcheck -f diff "$script" | sed 's/-//' | patch "$script"
               git add "$script"
             fi
           done
 
+      - name: Auto-Fix Python Scripts (If No Errors and Manual Trigger)
+        if: steps.lint-python-scripts.outputs.errors == '' && github.event_name == 'workflow_dispatch'
+        run: |
+          for script in ${{ steps.find-python-scripts.outputs.scripts }}; do
+            autopep8 --in-place --aggressive --aggressive "$script"
+            git add "$script"
+          done
+
       - name: Commit Changes (If Any)
+        if: github.event_name == 'workflow_dispatch'
         run: |
           if git diff --exit-code; then
-            git config --global user.name "elynord"
-            git config --global user.email "meuthiaelyani@proton.me"
-            git commit -am "Auto-fix shell script issues"
+            git config --global user.name "GitHub Action"
+            git config --global user.email "action@github.com"
+            git commit -am "Auto-fix script issues"
           fi
 
       - name: Push Changes (If Any)
-        if: github.event_name == 'push'
+        if: github.event_name == 'workflow_dispatch'
         run: git push
-
-      - name: Create Pull Request (If Changes Pushed)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: peter-evans/create-pull-request@v4
-        with:
-          title: "Auto-fix shell script issues"
-          body: "This PR contains automatic fixes for shell script issues."
-          branch: auto-fix-shell-script
-          base: main
