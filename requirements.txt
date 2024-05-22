@@ -19,3 +19,4 @@ For Machine Learning
 scikit-learn
 tensorflow
 pytorch
+cryptography
