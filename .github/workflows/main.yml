@@ -5,8 +5,12 @@ on:
     branches:
       - main
   schedule:
-    - cron: '0 * * * *'
-  workflow_dispatch:
+    - cron: '0 * * * *'  # Run daily at midnight
+  workflow_dispatch:     # Allow manual triggering
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
   lint-and-fix:
@@ -16,95 +20,87 @@ jobs:
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}  # Required for pushing fixes
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.x'  # Sesuaikan dengan versi Python Anda
+          python-version: '3.10'  # Replace with your preferred Python version
 
-      - name: Install Python dependencies
+      - name: Install Dependencies
         run: pip install pylint autopep8
 
       - name: Set up ShellCheck
         uses: reviewdog/action-shellcheck@v1
 
-      - name: Find Shell Scripts
-        id: find-shell-scripts
-        run: echo "::set-output name=scripts::$(find . -type f -name "*.sh")"
+      - name: Find Scripts
+        id: find_scripts
+        run: |
+          echo "::set-output name=shell_scripts::$(find . -type f -name '*.sh')"
+          echo "::set-output name=python_scripts::$(find . -type f -name '*.py')"
 
-      - name: Find Python Scripts
-        id: find-python-scripts
-        run: echo "::set-output name=scripts::$(find . -type f -name "*.py")"
-
-      - name: Lint Shell Scripts and Collect Errors
-        id: lint-shell-scripts
-        continue-on-error: true
+      - name: Lint Shell Scripts
+        id: lint_shell
+        continue-on-error: true 
         run: |
           errors=""
-          for script in ${{ steps.find-shell-scripts.outputs.scripts }}; do
-            echo "Checking $script"
+          for script in ${{ steps.find_scripts.outputs.shell_scripts }}; do
             if ! shellcheck "$script"; then
               errors="$errors\n$script"
             fi
           done
           echo "::set-output name=errors::$errors"
 
-      - name: Lint Python Scripts and Collect Errors
-        id: lint-python-scripts
-        continue-on-error: true
+      - name: Lint Python Scripts
+        id: lint_python
+        continue-on-error: true 
         run: |
           errors=""
-          for script in ${{ steps.find-python-scripts.outputs.scripts }}; do
-            echo "Checking $script"
-            if ! pylint --exit-zero "$script"; then
+          for script in ${{ steps.find_scripts.outputs.python_scripts }}; do
+            if ! pylint --exit-zero "$script"; then  # Exit-zero for all outcomes
               errors="$errors\n$script"
             fi
           done
           echo "::set-output name=errors::$errors"
 
-      - name: Create Pull Request or Auto-Fix
-        if: steps.lint-shell-scripts.outputs.errors != '' || steps.lint-python-scripts.outputs.errors != '' || github.event_name == 'schedule'
+      - name: Create Pull Request (if errors or scheduled)
+        if: steps.lint_shell.outputs.errors != '' || steps.lint_python.outputs.errors != '' || github.event_name == 'schedule'
         uses: peter-evans/create-pull-request@v4
         with:
-          title: "Script linting errors"
+          title: "[Auto Lint] Script linting errors" 
           body: |
             The following scripts have linting errors:
+            
+            **Shell Scripts:**
 
-            ${{ steps.lint-shell-scripts.outputs.errors }}
-            ${{ steps.lint-python-scripts.outputs.errors }}
+            ${{ steps.lint_shell.outputs.errors }}
+
+            **Python Scripts:**
+            
+            ${{ steps.lint_python.outputs.errors }}
 
             Please review and fix these errors.
           branch: auto-fix-scripts
           base: main
-          delete-branch: true
+          delete-branch: true # Remove branch after merge
 
-      - name: Auto-Fix Shell Scripts (If No Errors and Manual Trigger)
-        if: steps.lint-shell-scripts.outputs.errors == '' && github.event_name == 'workflow_dispatch'
+      - name: Auto-Fix Scripts (if no errors and manual trigger)
+        if: steps.lint_shell.outputs.errors == '' && steps.lint_python.outputs.errors == '' && github.event_name == 'workflow_dispatch'
         run: |
-          for script in ${{ steps.find-shell-scripts.outputs.scripts }}; do
-            if [ -n "$(shellcheck -f diff "$script" | grep '^-' | sed 's/-//')" ]; then
-              shellcheck -f diff "$script" | sed 's/-//' | patch "$script"
-              git add "$script"
-            fi
+          for script in ${{ steps.find_scripts.outputs.shell_scripts }}; do
+            shellcheck -f diff "$script" | patch "$script" || echo "No ShellCheck changes for $script"
           done
 
-      - name: Auto-Fix Python Scripts (If No Errors and Manual Trigger)
-        if: steps.lint-python-scripts.outputs.errors == '' && github.event_name == 'workflow_dispatch'
-        run: |
-          for script in ${{ steps.find-python-scripts.outputs.scripts }}; do
-            autopep8 --in-place --aggressive --aggressive "$script"
-            git add "$script"
+          for script in ${{ steps.find_scripts.outputs.python_scripts }}; do
+            autopep8 --in-place --aggressive --aggressive "$script" 
           done
 
-      - name: Commit Changes (If Any)
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          if git diff --exit-code; then
-            git config --global user.name "GitHub Action"
-            git config --global user.email "action@github.com"
-            git commit -am "Auto-fix script issues"
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .
+          if ! git diff --exit-code; then
+            git commit -m 'Auto-fix script issues'
+            git push
+          else
+            echo "No changes to commit."
           fi
-
-      - name: Push Changes (If Any)
-        if: github.event_name == 'workflow_dispatch'
-        run: git push
